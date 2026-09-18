@@ -30,7 +30,16 @@ Sur un autre poste, installer Playwright et Chromium puis passer le chemin du mo
 
 ## Vérification réelle et limites
 
-Un appel HTTP local à `/api/mobile/search-options` renvoie 503. Le diagnostic Prisma en lecture seule confirme que le serveur PostgreSQL configuré est inaccessible. Aucune réservation réelle n’a donc été créée ou confirmée pendant cette recette. Les adaptations ne sont pas encore déployées sur Vercel.
+Le blocage local a été résolu en redémarrant Docker Desktop : PostgreSQL du projet écoute sur le port 5434. La production Neon était accessible.
+
+Validation supplémentaire après mise en service :
+
+- 35 tests PostgreSQL réussis sur des schémas temporaires, avec les 16 migrations du schéma publié.
+- `scripts/test-mobile-http.cjs` dans le backend : vraie connexion HTTP, session hachée, favoris idempotents, réservation réellement enregistrée dans PostgreSQL local, seconde tentative sans doublon, contrôle d’appartenance, avis modéré, annulation et révocation de session. Serveur Next.js réel, aucune API simulée, aucun email envoyé. Schéma temporaire supprimé après le test.
+- Déploiement Vercel construit et promu ; API publique contrôlée en lecture seule via `node docs/check-live-api.cjs`. Contrats Zod valides : 20 lieux, pages de 12, 6 catégories, 7 quartiers, aucun événement futur à la date du contrôle. Accès anonyme aux données privées refusé (401).
+- Aucun compte, avis ou réservation de test ajouté en production. Les écritures ont été testées dans PostgreSQL local isolé.
+
+Le commit backend publié est `44140a7`. Les sources du précédent déploiement ont été comparées à l’archive Vercel et conservées pour éviter de remplacer des modifications web déjà en ligne.
 
 L’export ne prouve pas une exécution sur téléphone. Restent à vérifier sur Android/iOS : permissions refusées, clavier, bouton Retour système, Safe Areas, tailles de texte, VoiceOver/TalkBack, SecureStore, liens quivibe:// et cartes avec signature de distribution. Les identifiants de distribution, clés de cartes et builds de store ne sont pas configurés.
 

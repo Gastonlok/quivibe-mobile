@@ -1,5 +1,7 @@
 # Adaptations du backend existant
 
+Le backend est désormais publié sur `Gastonlok/Quivibe-newApp/main`, commit `44140a7`, et actif sur Vercel. Ce patch reste une référence d’intégration ; ne pas le réappliquer sur la version publiée.
+
 `mobile-api.patch` contient uniquement neuf fichiers du projet web : trois modifications et six ajouts (dont trois fichiers de tests). Ce n’est pas un second serveur.
 
 Les changements sont **déjà appliqués** à `C:/dev/Quivibe-newApp-final`. Leur application inverse a été vérifiée avec `git apply --reverse --check`. Le projet web local conserve ses autres modifications.

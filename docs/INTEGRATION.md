@@ -1,5 +1,7 @@
 # Raccordement au backend Quivibe
 
+Mise en service : API mobile active sur `https://quivibe.vercel.app`, backend `44140a7`. Voir [DEPLOIEMENT.md](DEPLOIEMENT.md).
+
 Projet de référence : `C:/dev/Quivibe-newApp-final/apps/web`, confirmé par le propriétaire. Les adaptateurs mobile vivent dans ce même serveur Next.js et utilisent son client Prisma et sa base PostgreSQL.
 
 ## Architecture réutilisée
@@ -53,8 +55,8 @@ Le prix affiché et les créneaux viennent du serveur. Une clé UUID reste ident
 
 Le patch de neuf fichiers est dans [backend-patches](../backend-patches/README.md). Il est déjà appliqué localement ; ne pas le réappliquer sur ce même dossier.
 
-1. Rétablir l’accès PostgreSQL du backend : le diagnostic local du 18 septembre 2026 indique un serveur inaccessible, avec configuration présente.
-2. Déployer les adaptations dans le projet web existant, avec ses variables serveur habituelles.
+1. PostgreSQL local rétabli : le conteneur du projet sur le port 5434 était arrêté. La base Neon de production était opérationnelle.
+2. Adaptations déployées dans le projet Vercel `quivibe`, avec sa configuration de production existante. Aucun changement de schéma supplémentaire.
 3. Pour l’aperçu web uniquement, définir côté serveur `MOBILE_WEB_ORIGINS=http://localhost:8081` ou les origines exactes nécessaires, séparées par des virgules.
 4. Configurer `EXPO_PUBLIC_API_URL` dans le mobile et reconstruire les bundles.
 5. Effectuer une recette avec un compte de test et un établissement de test : connexion, favoris, avis modéré, réservation, annulation et synchronisation web/mobile.

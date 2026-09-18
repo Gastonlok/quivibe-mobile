@@ -23,7 +23,7 @@ Copy-Item .env.example .env
 npm start
 ```
 
-Configurer `EXPO_PUBLIC_API_URL` avec l’URL du **backend existant ayant les routes /api/mobile**. Ces routes sont préparées dans [le patch backend](backend-patches/mobile-api.patch) et déjà appliquées au projet web local de référence. Elles ne sont pas déployées par ce dépôt.
+Configurer `EXPO_PUBLIC_API_URL` avec l’URL du **backend existant ayant les routes /api/mobile**. Ces routes sont déployées sur `https://quivibe.vercel.app`. Le [patch backend](backend-patches/mobile-api.patch) est conservé comme référence ; le code livré se trouve dans `Gastonlok/Quivibe-newApp`, commit `44140a7`.
 
 Sur un téléphone, utiliser l’adresse réseau du PC ou une URL HTTPS accessible, jamais `localhost` pour joindre le PC. L’aperçu web nécessite une origine CORS autorisée côté serveur.
 
@@ -48,6 +48,6 @@ Aucun secret serveur dans l’application. Sur web, la session reste uniquement 
 
 ## État de livraison
 
-TypeScript, ESLint, exports et recette navigateur vérifiés ; [détails et limites](docs/VALIDATION.md). L’accès PostgreSQL du backend local est actuellement indisponible : une réservation réelle en base et la recette sur téléphones restent à valider. Le backend doit être déployé avant d’utiliser le mobile contre la production.
+Le backend est en production et ses réponses réelles sont validées avec les contrats Zod du mobile. TypeScript, ESLint, exports et recette navigateur passent. Les 35 tests PostgreSQL isolés et le parcours HTTP réel (connexion, favori, réservation, reprise, avis, annulation, déconnexion) passent également. La recette manuelle sur téléphone reste à effectuer. Voir [la validation](docs/VALIDATION.md) et [le déploiement Android](docs/DEPLOIEMENT.md).
 
 Voir [le raccordement API](docs/INTEGRATION.md) et [l’analyse du projet existant](docs/ANALYSE-MOBILE.md).
