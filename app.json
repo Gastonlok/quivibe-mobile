@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Quivibe",
+    "slug": "quivibe-mobile",
+    "version": "1.0.0",
+    "scheme": "quivibe",
+    "orientation": "portrait",
+    "icon": "./assets/quivibe-logo.png",
+    "userInterfaceStyle": "light",
+    "ios": { "supportsTablet": true },
+    "android": { "predictiveBackGestureEnabled": false },
+    "web": { "favicon": "./assets/quivibe-logo.png" },
+    "plugins": ["expo-router", "expo-image", "expo-secure-store", ["expo-location", {"locationWhenInUsePermission": "Autorise Quivibe à utiliser ta position pour trouver des adresses près de toi."}]]
+  }
+}
