@@ -1,6 +1,6 @@
 # Quivibe mobile — analyse préalable
 
-Analyse du 18 septembre 2026. Aucun code applicatif ni backend modifié.
+État initial observé le 18 septembre 2026, avant l’implémentation. Cette analyse est conservée comme référence ; voir README.md et INTEGRATION.md pour l’état livré.
 
 ## Périmètre et preuves
 

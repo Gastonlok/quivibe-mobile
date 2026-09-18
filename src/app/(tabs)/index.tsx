@@ -1,38 +1,227 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
-import { router } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Button, Heading, Screen, Section, ServiceState, s } from '../../components/ui';
-import { discoveryCategories } from '../../constants/discovery';
-import { colors as c } from '../../theme';
+import { useQuery } from "@tanstack/react-query";
+import { search } from "../../services/api/search";
+import { Personalized } from "../../components/venue/Personalized";
+import { eventWindow } from "../../utils/dates";
+import { useState } from "react";
+import { router } from "expo-router";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import { Button, Heading, Screen, Section, s } from "../../components/ui";
+import { Chip, DataState } from "../../components/data";
+import { VenueCard } from "../../components/venue/VenueCard";
+import { EventCard } from "../../components/event/EventCard";
+import { useVenues, useEvents } from "../../hooks/queries";
+import { usePreferences } from "../../store/preferences";
+import { useSession } from "../../store/session";
+import { colors as c } from "../../theme";
+import { typography as t } from "../../typography";
+import { discoveryCategories } from "../../constants/discovery";
 export default function Home() {
-  return <Screen>
-    <Heading eyebrow="LA VILLE T’ATTEND" title="Où veux-tu sortir aujourd’hui ?" description="Les bonnes adresses. Les belles rencontres. Ta prochaine vibe, à Kinshasa." />
-    <Pressable accessibilityRole="button" accessibilityLabel="Rechercher un restaurant, café, bar ou événement" onPress={() => router.push('/search')} style={styles.search}>
-      <Ionicons name="search" size={22} color={c.primaryText} /><Text style={[s.body, { flex: 1 }]}>Restaurant, café, bar, événement…</Text><View style={styles.searchArrow}><Ionicons name="arrow-forward" size={19} color={c.text} /></View>
-    </Pressable>
-    <View style={styles.hero}>
-      <View style={styles.heroTop}><Text style={styles.heroLabel}>NE CHERCHE PLUS.</Text><Ionicons name="sparkles" size={25} color={c.text} /></View>
-      <Text style={styles.heroTitle}>Vibe où{'\n'}tu veux.</Text>
-      <Text style={styles.heroCopy}>Un dîner à deux ou une soirée entre amis ?{'\n'}Trouve l’envie qui te ressemble.</Text>
-      <Button label="Explorer Kinshasa" onPress={() => router.push('/explore')} />
-    </View>
-    <Section title="À chaque envie, sa sortie">
-      <View style={styles.categories}>{discoveryCategories.map(item => <Pressable key={item.label} accessibilityRole="button" accessibilityLabel={`Explorer : ${item.label}`} onPress={() => router.push(item.label === 'Événements' ? '/events' : { pathname: '/explore', params: { category: item.label } })} style={({ pressed }) => [styles.category, pressed && s.pressed]}>
-        <View style={styles.categoryIcon}><Ionicons name={item.icon} size={24} color={c.text} /></View><Text style={styles.categoryText}>{item.label}</Text>
-      </Pressable>)}</View>
-    </Section>
-    <Section title="Tendances à Kinshasa" href="/explore"><ServiceState title="Les bonnes adresses arrivent" message="Le catalogue Quivibe n’est pas encore disponible dans cette version de l’application." icon="restaurant-outline" /></Section>
-    <Section title="Près de toi"><View style={styles.nearby}><Ionicons name="navigate-outline" size={30} color={c.primaryText} /><Text style={s.body}>Découvre bientôt les adresses autour de toi. Tu choisiras quand partager ta position.</Text></View></Section>
-    <Pressable accessibilityRole="button" accessibilityLabel="Découvrir Quivibe AI" onPress={() => router.push('/ai')} style={styles.ai}>
-      <Ionicons name="sparkles" size={27} color={c.primary} /><View style={s.flex}><Text style={styles.aiTitle}>Une envie ? Parlons-en.</Text><Text style={styles.aiCopy}>Ton prochain coup de cœur avec Quivibe AI</Text></View><Ionicons name="arrow-forward" size={23} color={c.white} />
-    </Pressable>
-    <Section title="Ce week-end" href="/events"><ServiceState title="On se retrouve où ?" message="Les événements seront disponibles ici dès l’ouverture du service mobile." icon="calendar-outline" /></Section>
-  </Screen>;
+  const prefs = usePreferences(),
+    session = useSession();
+  const [locating, setLocating] = useState(false);
+  const options = useQuery({
+    queryKey: ["search-options"],
+    queryFn: ({ signal }) => search.options(signal),
+    staleTime: 3600000,
+  });
+  function explore(label: string) {
+    if (label === "Événements") return router.push("/events");
+    const normalize = (value: string) =>
+      value
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/s$/, "");
+    const category = options.data?.categories.find(
+      (item) => normalize(item.name) === normalize(label),
+    );
+    router.push(
+      category
+        ? { pathname: "/explore", params: { category: category.slug } }
+        : {
+            pathname: "/ai",
+            params: {
+              prompt: "Je cherche une sortie " + label + " à Kinshasa.",
+            },
+          },
+    );
+  }
+  const trending = useVenues({ sort: "rating" });
+  const near = useVenues(
+    prefs.position
+      ? {
+          lat: String(prefs.position.latitude),
+          lng: String(prefs.position.longitude),
+          radius: "5",
+          sort: "distance",
+        }
+      : { sort: "rating" },
+  );
+  const [weekend] = useState(() => eventWindow("weekend"));
+  const upcoming = useEvents(weekend);
+  const refresh = () => {
+    void trending.refetch();
+    void near.refetch();
+    void upcoming.refetch();
+  };
+  return (
+    <Screen
+      refreshing={
+        trending.isRefetching || near.isRefetching || upcoming.isRefetching
+      }
+      onRefresh={refresh}
+    >
+      <View style={{ flexDirection: "row", gap: 12, alignItems: "flex-start" }}>
+        <View style={s.flex}>
+          <Heading
+            eyebrow={
+              "BONJOUR" + (session.user ? ", " + session.user.name : "") + " 👋"
+            }
+            title="Quelle est ta vibe aujourd’hui ?"
+          />
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Mon profil"
+          onPress={() => router.push("/profile")}
+          style={{ padding: 12, backgroundColor: c.soft, borderRadius: 24 }}
+        >
+          <Ionicons name="person-outline" size={25} color={c.text} />
+        </Pressable>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Rechercher une adresse"
+        onPress={() => router.push("/search")}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 12,
+          padding: 18,
+          borderRadius: 18,
+          backgroundColor: c.white,
+          borderWidth: 1,
+          borderColor: c.border,
+        }}
+      >
+        <Ionicons name="search" color={c.primaryText} size={24} />
+        <Text style={[t.body, s.flex]}>Restaurant, café, bar, événement…</Text>
+      </Pressable>
+      <Section title="Explorer">
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: 8 }}
+        >
+          {discoveryCategories.map((item) => (
+            <Chip
+              key={item.label}
+              label={item.label}
+              onPress={() => explore(item.label)}
+            />
+          ))}
+        </ScrollView>
+      </Section>
+      <Section title="Tendances à Kinshasa" href="/explore">
+        <DataState
+          query={trending}
+          empty={!trending.data?.pages[0]?.places.length}
+        />
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: 14 }}
+        >
+          {trending.data?.pages[0]?.places.map((venue) => (
+            <VenueCard key={venue.id} venue={venue} horizontal />
+          ))}
+        </ScrollView>
+      </Section>
+      <Section
+        title={
+          prefs.position
+            ? "Près de toi"
+            : "Découvre les lieux populaires près de toi"
+        }
+      >
+        {!prefs.position && (
+          <Button
+            label={
+              locating ? "Recherche de ta position…" : "Activer ma localisation"
+            }
+            disabled={locating}
+            secondary
+            onPress={() => {
+              setLocating(true);
+              void prefs.locate().finally(() => setLocating(false));
+            }}
+          />
+        )}
+        {prefs.locationError ? (
+          <Text style={t.caption}>{prefs.locationError}</Text>
+        ) : null}
+        <DataState query={near} empty={!near.data?.pages[0]?.places.length} />
+        <ScrollView
+          horizontal
+          contentContainerStyle={{ gap: 14 }}
+          showsHorizontalScrollIndicator={false}
+        >
+          {near.data?.pages[0]?.places.slice(0, 6).map((venue) => (
+            <VenueCard key={venue.id} venue={venue} horizontal />
+          ))}
+        </ScrollView>
+      </Section>
+      {prefs.value.vibes.length > 0 && (
+        <Section title="Pour toi">
+          <Personalized vibes={prefs.value.vibes} />
+          <Text style={s.body}>Tes envies du moment</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {prefs.value.vibes.map((vibe) => (
+              <Chip
+                key={vibe}
+                label={vibe}
+                onPress={() =>
+                  router.push({
+                    pathname: "/ai",
+                    params: {
+                      prompt: "Je cherche une sortie " + vibe + " à Kinshasa.",
+                    },
+                  })
+                }
+              />
+            ))}
+          </View>
+        </Section>
+      )}
+      <View
+        style={{
+          backgroundColor: c.secondary,
+          borderRadius: 24,
+          padding: 24,
+          gap: 14,
+        }}
+      >
+        <Ionicons name="sparkles" color={c.primary} size={30} />
+        <Text style={[t.section, { color: c.white }]}>
+          Tu ne sais pas où aller ?
+        </Text>
+        <Text style={[t.body, { color: "#DDDDD8" }]}>
+          Demande à Quivibe AI.
+        </Text>
+        <Button label="Trouver ma vibe" onPress={() => router.push("/ai")} />
+      </View>
+      <Section title="Ce week-end" href="/events">
+        <DataState
+          query={upcoming}
+          empty={!upcoming.data?.pages[0]?.items.length}
+          title="Le prochain rendez-vous arrive"
+          message="Aucun événement annoncé pour le moment."
+        />
+        {upcoming.data?.pages[0]?.items.slice(0, 3).map((event) => (
+          <EventCard key={event.id} event={event} />
+        ))}
+      </Section>
+    </Screen>
+  );
 }
-const styles = StyleSheet.create({
-  search: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: 12, borderColor: c.border, borderWidth: 1, borderRadius: 20, backgroundColor: c.white, padding: 14 }, searchArrow: { backgroundColor: c.primary, padding: 10, borderRadius: 12 },
-  hero: { backgroundColor: c.primary, borderRadius: 26, padding: 24, gap: 20 }, heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, heroLabel: { fontSize: 10, fontWeight: '900', letterSpacing: 2, color: c.text },
-  heroTitle: { fontSize: 54, lineHeight: 55, letterSpacing: -2.5, fontWeight: '900', color: c.text }, heroCopy: { color: c.text, lineHeight: 22, fontSize: 14 },
-  categories: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, category: { width: '23%', flexGrow: 1, minWidth: 64, alignItems: 'center', gap: 10, paddingVertical: 8 }, categoryIcon: { padding: 17, borderRadius: 22, backgroundColor: c.white, borderColor: c.border, borderWidth: 1 }, categoryText: { fontSize: 11, color: c.text, fontWeight: '600', textAlign: 'center' },
-  nearby: { backgroundColor: c.soft, padding: 22, borderRadius: 22, gap: 12 }, ai: { backgroundColor: c.secondary, padding: 22, borderRadius: 22, gap: 14, flexDirection: 'row', alignItems: 'center' }, aiTitle: { color: c.white, fontSize: 18, fontWeight: '800' }, aiCopy: { color: '#D0D0CA', fontSize: 12, lineHeight: 19, marginTop: 6 },
-});

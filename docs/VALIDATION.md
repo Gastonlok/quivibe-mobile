@@ -1,28 +1,37 @@
-# Validation — phases 2–3
+# Validation — application et adaptateurs mobile
 
-18 septembre 2026. Périmètre : socle Expo Router et thème, sans raccordement métier.
+18 septembre 2026.
 
-## Vérifications
+## Vérifications réalisées
 
-- TypeScript mobile : `npm run type-check`.
-- Compatibilité SDK : `npx expo install --check` (dépendances alignées).
-- Compilation des bundles Android, iOS et web : `npm run export`.
-- TypeScript web : compilateur du projet web avec `--noEmit --incremental false` (réussi). Aucun code web modifié pendant cette étape.
-- Recette navigateur : routes et liens profonds, sélection/réinitialisation de catégorie, page introuvable, absence d’erreurs JavaScript, largeur 320 px. Script : smoke-navigation.cjs ; utilise Chromium via Playwright installé dans le projet web.
-- Aperçu : navigation-home.png.
+- TypeScript et ESLint mobile.
+- Compatibilité des dépendances avec Expo SDK 57 : `npx expo install --check`.
+- Export des bundles Android, iOS et web.
+- TypeScript backend et ESLint ciblé sur les adaptations.
+- Tests backend : **116 réussis, 25 ignorés**. Les suites ignorées requièrent une base de test. Les 22 nouveaux tests mobile couvrent le stockage haché, les jetons Bearer, expiration/suspension/révocation, isolation des identités, refus d’accès privé, pagination, filtres par compte, CORS, disponibilité déléguée et révocation lors d’un changement de mot de passe.
+- Patch backend de neuf fichiers vérifié par application inverse à blanc.
 
-Commande de recette sur ce poste, après l’export terminé :
+## Recette navigateur automatisée
+
+`docs/smoke-navigation.cjs` lance Chromium contre les bundles exportés et intercepte les appels API avec des fixtures explicitement réservées au test. Aucune écriture sur la production.
+
+Parcours : onboarding, préférences après rechargement, recherche et filtres, lieu, menu, avis, connexion avec retour au parcours, réservation désactivée sans créneau, reprise après erreur 503 conservant la clé d’idempotence, confirmation relue, détail de réservation, événements et conversation AI avec ouverture d’un lieu.
+
+Les scénarios erreur API avec nouvelle tentative et perte de connexion avec bandeau discret passent également.
+
+Contrôles : Noto Sans chargée, aucune erreur JavaScript, absence de débordement horizontal de l’accueil à 360 × 800, 375 × 812, 390 × 844 et 412 × 915. Captures : `navigation-home.png` et `navigation-reservation.png` (données de test). L’accueil capturé montre volontairement un catalogue vide pour tester cet état.
 
 ```powershell
-node docs/smoke-navigation.cjs 'C:\dev\Quivibe-newApp-final\apps\web\node_modules\@playwright\test'
+npm run export
+node docs/smoke-navigation.cjs 'C:/dev/Quivibe-newApp-final/apps/web/node_modules/@playwright/test'
 ```
 
-Pour un autre poste, installer Playwright et son navigateur de test, puis passer le chemin du module au script.
+Sur un autre poste, installer Playwright et Chromium puis passer le chemin du module. Les fixtures ne constituent pas une validation PostgreSQL.
 
-## Limites de cette validation
+## Vérification réelle et limites
 
-Les bundles ne prouvent pas une recette physique Android/iOS. Retour système, grands caractères, VoiceOver/TalkBack et comportement des liens quivibe:// doivent être vérifiés sur appareils. Aucun parcours métier, base de données, session ou appel de production n’a été testé dans cette étape.
+Un appel HTTP local à `/api/mobile/search-options` renvoie 503. Le diagnostic Prisma en lecture seule confirme que le serveur PostgreSQL configuré est inaccessible. Aucune réservation réelle n’a donc été créée ou confirmée pendant cette recette. Les adaptations ne sont pas encore déployées sur Vercel.
 
-Le catalogue, les filtres, la recherche, les menus, la connexion, les mutations serveur et Quivibe AI affichent leur indisponibilité. Les écrans sont des points d’entrée de navigation en attente des phases suivantes, pas une application métier terminée.
+L’export ne prouve pas une exécution sur téléphone. Restent à vérifier sur Android/iOS : permissions refusées, clavier, bouton Retour système, Safe Areas, tailles de texte, VoiceOver/TalkBack, SecureStore, liens quivibe:// et cartes avec signature de distribution. Les identifiants de distribution, clés de cartes et builds de store ne sont pas configurés.
 
-Le logo source a été repris ; les identifiants de distribution et les déclinaisons finales des icônes restent à préparer avant publication.
+`npm audit --omit=dev` signale 14 alertes modérées transitives dans la chaîne Expo (decode-uri-component/query-string et uuid/xcode). Aucune mise à niveau forcée n’a été faite : npm propose des rétrogradations incompatibles avec SDK 57. Réévaluer avec les mises à jour Expo compatibles avant publication.

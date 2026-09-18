@@ -1,0 +1,979 @@
+diff --git a/apps/web/app/api/auth/reset-password/route.ts b/apps/web/app/api/auth/reset-password/route.ts
+index e0f7a4f..e05d75a 100644
+--- a/apps/web/app/api/auth/reset-password/route.ts
++++ b/apps/web/app/api/auth/reset-password/route.ts
+@@ -22,7 +22,10 @@ export async function POST(request: Request) {
+       return NextResponse.json({ error: "Ce lien est invalide ou a expire." }, { status: 400 });
+     }
+ 
+-    await prisma.user.update({ where: { email }, data: { passwordHash } });
++    await prisma.$transaction(async (tx) => {
++      const user = await tx.user.update({ where: { email }, data: { passwordHash } });
++      await tx.session.deleteMany({ where: { userId: user.id, sessionToken: { startsWith: "mobile:" } } });
++    });
+     return NextResponse.json(
+       { message: "Votre mot de passe a ete mis a jour." },
+       { headers: { "Cache-Control": "no-store" } },
+diff --git a/apps/web/app/api/profile/password/route.ts b/apps/web/app/api/profile/password/route.ts
+index c97406a..aedfce0 100644
+--- a/apps/web/app/api/profile/password/route.ts
++++ b/apps/web/app/api/profile/password/route.ts
+@@ -17,6 +17,10 @@ export async function PATCH(request: Request) {
+     return NextResponse.json({ error: "Mot de passe actuel incorrect." }, { status: 400 });
+   }
+ 
+-  await prisma.user.update({ where: { id: session.user.id }, data: { passwordHash: await bcrypt.hash(parsed.data.newPassword, 12) } });
++  const passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
++  await prisma.$transaction(async (tx) => {
++    await tx.user.update({ where: { id: session.user.id }, data: { passwordHash } });
++    await tx.session.deleteMany({ where: { userId: session.user.id, sessionToken: { startsWith: "mobile:" } } });
++  });
+   return NextResponse.json({ message: "Mot de passe mis a jour." });
+ }
+diff --git a/apps/web/lib/auth.ts b/apps/web/lib/auth.ts
+index 44e2677..1cca411 100644
+--- a/apps/web/lib/auth.ts
++++ b/apps/web/lib/auth.ts
+@@ -1,3 +1,4 @@
++import { mobileIdentity } from "@/features/mobile/context";
+ // apps/web/lib/auth.ts
+ import NextAuth from "next-auth";
+ import Credentials from "next-auth/providers/credentials";
+@@ -32,29 +33,7 @@ class AuthServiceUnavailableError extends CredentialsSignin {
+   code = "auth-service-unavailable";
+ }
+ 
+-export const {
+-  handlers,
+-  signIn,
+-  signOut,
+-  auth: sessionAuth,
+-} = NextAuth({
+-  session: {
+-    strategy: "jwt",
+-    maxAge: 30 * 24 * 60 * 60, // 30 jours
+-  },
+-  pages: {
+-    signIn: "/login",
+-    signOut: "/",
+-    error: "/auth/error",
+-  },
+-  providers: [
+-    Credentials({
+-      name: "credentials",
+-      credentials: {
+-        email: { label: "Email", type: "email" },
+-        password: { label: "Mot de passe", type: "password" },
+-      },
+-      async authorize(rawCredentials) {
++export async function authenticateCredentials(rawCredentials: unknown) {
+         try {
+           // Validation des credentials
+           const parsed = loginSchema.safeParse(rawCredentials);
+@@ -102,7 +81,31 @@ export const {
+           console.error("Erreur d'authentification:", error);
+           throw new AuthServiceUnavailableError();
+         }
++}
++
++export const {
++  handlers,
++  signIn,
++  signOut,
++  auth: sessionAuth,
++} = NextAuth({
++  session: {
++    strategy: "jwt",
++    maxAge: 30 * 24 * 60 * 60, // 30 jours
++  },
++  pages: {
++    signIn: "/login",
++    signOut: "/",
++    error: "/auth/error",
++  },
++  providers: [
++    Credentials({
++      name: "credentials",
++      credentials: {
++        email: { label: "Email", type: "email" },
++        password: { label: "Mot de passe", type: "password" },
+       },
++      authorize: authenticateCredentials,
+     }),
+   ],
+   callbacks: {
+@@ -152,6 +155,8 @@ export const {
+ 
+ // Deleted or suspended accounts lose access on their next server request.
+ export async function auth() {
++  const mobileSession = mobileIdentity.getStore();
++  if (mobileSession !== undefined) return mobileSession;
+   const session = await sessionAuth();
+   return session?.user?.id && session.user.role !== "DISABLED" ? session : null;
+ }
+diff --git a/apps/web/app/api/mobile/[...path]/route.ts b/apps/web/app/api/mobile/[...path]/route.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/app/api/mobile/[...path]/route.ts
+@@ -0,0 +1,444 @@
++import {
++  GET as messages,
++  PATCH as readMessage,
++} from "@/app/api/messages/route";
++import { NextResponse } from "next/server";
++import { z } from "zod";
++import { prisma } from "@/lib/prisma";
++import { authenticateCredentials } from "@/lib/auth";
++import { mobileIdentity } from "@/features/mobile/context";
++import {
++  allowLogin,
++  issueSession,
++  readSession,
++  revokeSession,
++} from "@/features/mobile/session";
++import { restaurantSearchSchema } from "@/features/places/search-params";
++import { searchRestaurants } from "@/features/places/search-service";
++import {
++  restaurantSearchOptions,
++  restaurantSuggestions,
++} from "@/features/places/search-actions";
++import { getPlaceBySlug } from "@/features/places/actions";
++import { placeMediaOrder } from "@/features/places/media-order";
++import {
++  getAvailableSlotsAction,
++  createReservationAction,
++  cancelMyReservationAction,
++} from "@/features/reservations/actions";
++import { createReservationSchema } from "@/features/reservations/schema";
++import { revalidatePath } from "next/cache";
++import { POST as register } from "@/app/api/auth/register/route";
++import { POST as resetPassword } from "@/app/api/auth/request-password-reset/route";
++import { POST as createReview } from "@/app/api/reviews/route";
++import { PATCH as updateProfile } from "@/app/api/profile/route";
++import { POST as avatarSignature } from "@/app/api/uploads/avatar/route";
++import { POST as askAI } from "@/app/api/quivibe-ai/route";
++
++export const runtime = "nodejs";
++export const dynamic = "force-dynamic";
++type Context = { params: Promise<{ path: string[] }> };
++const pageSchema = z.coerce.number().int().min(1).max(10000);
++const json = (data: unknown, status = 200) =>
++  NextResponse.json(data, { status });
++const denied = () =>
++  json({ error: "Connexion requise.", code: "UNAUTHENTICATED" }, 401);
++const notFound = () => json({ error: "Introuvable." }, 404);
++const action = (value: { success: boolean; error?: string; code?: string }) =>
++  json(
++    value,
++    value.success ? 200 : value.code === "UNAUTHENTICATED" ? 401 : 400,
++  );
++const cardSelect = {
++  id: true,
++  slug: true,
++  name: true,
++  neighborhood: true,
++  priceRange: true,
++  reservationsEnabled: true,
++  media: {
++    take: 2,
++    orderBy: placeMediaOrder,
++    select: { url: true, altText: true },
++  },
++  categories: { select: { category: { select: { name: true } } } },
++} as const;
++const eventSelect = {
++  id: true,
++  title: true,
++  description: true,
++  startDate: true,
++  endDate: true,
++  media: { take: 1, select: { url: true, altText: true } },
++  place: {
++    select: { ...cardSelect, address: true, latitude: true, longitude: true },
++  },
++} as const;
++
++async function route(request: Request, context: Context) {
++  const { path } = await context.params;
++  const [resource, id, sub] = path;
++  const url = new URL(request.url),
++    method = request.method;
++  const session = await readSession(request);
++  return mobileIdentity.run(session, async () => {
++    if (resource === "session") {
++      if (method === "GET") return session ? json(session) : denied();
++      if (method === "DELETE") {
++        await revokeSession(request);
++        return json({ success: true });
++      }
++      if (method === "POST") {
++        const body = await request.json();
++        const ip =
++          request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
++          "unknown";
++        if (
++          !allowLogin("ip:" + ip) ||
++          !allowLogin("email:" + String(body?.email || "").toLowerCase())
++        )
++          return json(
++            { error: "Trop de tentatives. Réessaie dans 15 minutes." },
++            429,
++          );
++        try {
++          const user = await authenticateCredentials(body);
++          if (!user)
++            return json({ error: "Email ou mot de passe incorrect." }, 401);
++          return json({ ...(await issueSession(user.id)), user });
++        } catch (error) {
++          const code = (error as { code?: string }).code;
++          return json(
++            {
++              error:
++                code === "email-not-verified"
++                  ? "Vérifie ton adresse email avant de te connecter."
++                  : "Connexion indisponible.",
++              code,
++            },
++            code === "email-not-verified" ? 403 : 503,
++          );
++        }
++      }
++    }
++    if (resource === "register" && method === "POST") return register(request);
++    if (resource === "password-reset" && method === "POST")
++      return resetPassword(request);
++    if (resource === "ai" && method === "POST") return askAI(request);
++    if (resource === "search-options" && method === "GET")
++      return json(await restaurantSearchOptions());
++    if (resource === "suggestions" && method === "GET")
++      return json(await restaurantSuggestions(url.searchParams.get("q") || ""));
++    if (resource === "venues" && method === "GET") {
++      if (!id) {
++        const filters = restaurantSearchSchema.parse(
++          Object.fromEntries(url.searchParams),
++        );
++        return json(await searchRestaurants(prisma, filters, session?.user.id));
++      }
++      if (sub === "availability")
++        return action(
++          await getAvailableSlotsAction({
++            placeId: id,
++            date: url.searchParams.get("date") || "",
++            partySize: Number(url.searchParams.get("partySize") || 2),
++          }),
++        );
++      const place = await getPlaceBySlug(id);
++      if (!place) return notFound();
++      // Explicit public DTO. Never serialize owner email or internal capacity.
++      return json({
++        id: place.id,
++        slug: place.slug,
++        name: place.name,
++        description: place.description,
++        neighborhood: place.neighborhood,
++        address: place.address,
++        phone: place.phone,
++        latitude: place.latitude,
++        longitude: place.longitude,
++        priceRange: place.priceRange,
++        averageRating: place.averageRating,
++        reviewCount: place.reviews.length,
++        isFavorite: place.isFavorite,
++        reservationsEnabled: place.reservationsEnabled,
++        maxPartySize: place.maxPartySize,
++        media: place.media.map(({ url, altText }) => ({ url, altText })),
++        categories: place.categories.map(({ category }) => ({
++          category: { name: category.name },
++        })),
++        menuItems: place.menuItems.map(
++          ({ id, name, description, price, category, imageUrl }) => ({
++            id,
++            name,
++            description,
++            price,
++            category,
++            imageUrl,
++          }),
++        ),
++      });
++    }
++    const page = pageSchema.parse(url.searchParams.get("page") || 1),
++      take = 12,
++      skip = (page - 1) * take;
++    if (resource === "events" && method === "GET") {
++      if (id) {
++        const event = await prisma.event.findFirst({
++          where: { id, status: "APPROVED", place: { status: "APPROVED" } },
++          select: eventSelect,
++        });
++        return event ? json(event) : notFound();
++      }
++      const from = url.searchParams.get("from"),
++        to = url.searchParams.get("to");
++      const dates = z
++        .object({
++          from: z.string().datetime().optional(),
++          to: z.string().datetime().optional(),
++        })
++        .parse({ from: from || undefined, to: to || undefined });
++      const where = {
++        status: "APPROVED",
++        place: { status: "APPROVED" },
++        startDate: {
++          gte: dates.from ? new Date(dates.from) : new Date(),
++          ...(dates.to ? { lt: new Date(dates.to) } : {}),
++        },
++      };
++      const [items, total] = await Promise.all([
++        prisma.event.findMany({
++          where,
++          select: eventSelect,
++          orderBy: [{ startDate: "asc" }, { id: "asc" }],
++          take,
++          skip,
++        }),
++        prisma.event.count({ where }),
++      ]);
++      return json({ items, page, total, totalPages: Math.ceil(total / take) });
++    }
++    if (resource === "reviews" && method === "GET" && id !== "mine") {
++      if (!id) return notFound();
++      const where = {
++        placeId: id,
++        status: "APPROVED",
++        place: { status: "APPROVED" },
++      };
++      const [items, total] = await Promise.all([
++        prisma.review.findMany({
++          where,
++          select: {
++            id: true,
++            rating: true,
++            comment: true,
++            createdAt: true,
++            author: { select: { name: true } },
++            response: { select: { body: true } },
++          },
++          take,
++          skip,
++          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
++        }),
++        prisma.review.count({ where }),
++      ]);
++      return json({ items, page, total, totalPages: Math.ceil(total / take) });
++    }
++    if (!session) return denied();
++    if (resource === "messages" && method === "GET") return messages(request);
++    if (resource === "messages" && method === "PATCH")
++      return readMessage(request);
++    if (resource === "profile" && method === "PATCH")
++      return updateProfile(request);
++    if (resource === "avatar" && method === "POST") return avatarSignature();
++    if (resource === "reviews" && method === "POST")
++      return createReview(request);
++    if (resource === "reviews" && id === "mine" && method === "GET") {
++      const where = { authorId: session.user.id };
++      const [items, total] = await Promise.all([
++        prisma.review.findMany({
++          where,
++          select: {
++            id: true,
++            rating: true,
++            comment: true,
++            status: true,
++            createdAt: true,
++            place: { select: { name: true, slug: true } },
++          },
++          take,
++          skip,
++          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
++        }),
++        prisma.review.count({ where }),
++      ]);
++      return json({ items, page, total, totalPages: Math.ceil(total / take) });
++    }
++    if (resource === "favorites") {
++      if (method === "GET") {
++        const where = {
++          userId: session.user.id,
++          place: { status: "APPROVED" },
++        };
++        const [favorites, total] = await Promise.all([
++          prisma.favorite.findMany({
++            where,
++            include: { place: { select: cardSelect } },
++            take,
++            skip,
++            orderBy: [{ createdAt: "desc" }, { placeId: "asc" }],
++          }),
++          prisma.favorite.count({ where }),
++        ]);
++        const ids = favorites.map((f) => f.placeId);
++        const ratings = await prisma.review.groupBy({
++          by: ["placeId"],
++          where: { placeId: { in: ids }, status: "APPROVED" },
++          _avg: { rating: true },
++          _count: { rating: true },
++        });
++        return json({
++          items: favorites.map(({ place }) => ({
++            ...place,
++            isFavorite: true,
++            averageRating:
++              ratings.find((r) => r.placeId === place.id)?._avg.rating ?? null,
++            reviewCount:
++              ratings.find((r) => r.placeId === place.id)?._count.rating ?? 0,
++          })),
++          page,
++          total,
++          totalPages: Math.ceil(total / take),
++        });
++      }
++      if (id && ["PUT", "DELETE"].includes(method)) {
++        const place = await prisma.place.findFirst({
++          where: { id, status: "APPROVED" },
++          select: { slug: true },
++        });
++        if (!place) return notFound();
++        const key = { userId: session.user.id, placeId: id };
++        if (method === "PUT")
++          await prisma.favorite.upsert({
++            where: { userId_placeId: key },
++            create: key,
++            update: {},
++          });
++        else await prisma.favorite.deleteMany({ where: key });
++        revalidatePath("/favorites");
++        revalidatePath("/discover");
++        revalidatePath("/places/" + place.slug);
++        return json({ isFavorite: method === "PUT" });
++      }
++    }
++    if (resource === "reservations") {
++      if (method === "POST")
++        return action(
++          await createReservationAction(
++            createReservationSchema.parse(await request.json()),
++          ),
++        );
++      if (id && method === "DELETE")
++        return action(await cancelMyReservationAction(id));
++      if (method === "GET") {
++        const group = z
++          .enum(["upcoming", "past", "cancelled"])
++          .parse(url.searchParams.get("group") || "upcoming");
++        const where = {
++          customerId: session.user.id,
++          ...(id
++            ? { reference: id }
++            : group === "cancelled"
++              ? { status: "CANCELLED" }
++              : group === "past"
++                ? { status: { not: "CANCELLED" }, dateTime: { lt: new Date() } }
++                : {
++                    status: { in: ["PENDING", "CONFIRMED"] },
++                    dateTime: { gte: new Date() },
++                  }),
++        };
++        const select = {
++          id: true,
++          reference: true,
++          dateTime: true,
++          partySize: true,
++          status: true,
++          reservationPriceMinor: true,
++          reservationCurrency: true,
++          place: { select: { ...cardSelect, address: true } },
++        } as const;
++        if (id) {
++          const item = await prisma.reservation.findFirst({ where, select });
++          return item ? json(item) : notFound();
++        }
++        const [items, total] = await Promise.all([
++          prisma.reservation.findMany({
++            where,
++            select,
++            take,
++            skip,
++            orderBy: [{ dateTime: "desc" }, { id: "asc" }],
++          }),
++          prisma.reservation.count({ where }),
++        ]);
++        return json({
++          items,
++          page,
++          total,
++          totalPages: Math.ceil(total / take),
++        });
++      }
++    }
++    return notFound();
++  });
++}
++async function handle(request: Request, context: Context) {
++  const origin = request.headers.get("origin");
++  const allowed = (process.env.MOBILE_WEB_ORIGINS || "")
++    .split(",")
++    .map((s) => s.trim())
++    .filter(Boolean);
++  const ownOrigin = new URL(request.url).origin;
++  if (origin && origin !== ownOrigin && !allowed.includes(origin))
++    return json({ error: "Origine non autorisée." }, 403);
++  let response: Response;
++  try {
++    if (Number(request.headers.get("content-length") || 0) > 20000)
++      return json({ error: "Requête trop volumineuse." }, 413);
++    response =
++      request.method === "OPTIONS"
++        ? new Response(null, { status: 204 })
++        : await route(request, context);
++  } catch (error) {
++    if (!(error instanceof z.ZodError) && !(error instanceof SyntaxError))
++      console.error("Mobile API failure", {
++        name: (error as Error)?.name,
++        code: (error as { code?: string })?.code,
++      });
++    response =
++      error instanceof z.ZodError || error instanceof SyntaxError
++        ? json({ error: "Certains paramètres sont invalides." }, 400)
++        : json({ error: "Le service est momentanément indisponible." }, 503);
++  }
++  response.headers.set("Cache-Control", "no-store");
++  response.headers.set("Vary", "Origin");
++  if (origin && (allowed.includes(origin) || origin === ownOrigin))
++    response.headers.set("Access-Control-Allow-Origin", origin);
++  response.headers.set(
++    "Access-Control-Allow-Headers",
++    "Content-Type, Authorization",
++  );
++  response.headers.set(
++    "Access-Control-Allow-Methods",
++    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
++  );
++  return response;
++}
++export {
++  handle as GET,
++  handle as POST,
++  handle as PUT,
++  handle as PATCH,
++  handle as DELETE,
++  handle as OPTIONS,
++};
+diff --git a/apps/web/features/mobile/context.ts b/apps/web/features/mobile/context.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/features/mobile/context.ts
+@@ -0,0 +1,4 @@
++import { AsyncLocalStorage } from "node:async_hooks";
++import type { Session } from "next-auth";
++// Overrides identity only while a mobile HTTP handler reuses a server action.
++export const mobileIdentity = new AsyncLocalStorage<Session | null>();
+diff --git a/apps/web/features/mobile/password-revocation.test.ts b/apps/web/features/mobile/password-revocation.test.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/features/mobile/password-revocation.test.ts
+@@ -0,0 +1,84 @@
++import { beforeEach, expect, it, vi } from "vitest";
++const m = vi.hoisted(() => ({
++  update: vi.fn(),
++  deleteMany: vi.fn(),
++  transaction: vi.fn(),
++  findUnique: vi.fn(),
++  consume: vi.fn(),
++  auth: vi.fn(),
++  hash: vi.fn(),
++  compare: vi.fn(),
++}));
++vi.mock("@/lib/prisma", () => ({
++  prisma: { $transaction: m.transaction, user: { findUnique: m.findUnique } },
++}));
++vi.mock("@/lib/auth", () => ({ auth: m.auth }));
++vi.mock("@/lib/account-tokens", () => ({ consumeAccountToken: m.consume }));
++vi.mock("bcryptjs", () => ({ default: { hash: m.hash, compare: m.compare } }));
++import { POST as reset } from "@/app/api/auth/reset-password/route";
++import { PATCH as change } from "@/app/api/profile/password/route";
++beforeEach(() => {
++  vi.clearAllMocks();
++  m.hash.mockResolvedValue("new-hash");
++  m.transaction.mockImplementation((callback) =>
++    callback({
++      user: { update: m.update },
++      session: { deleteMany: m.deleteMany },
++    }),
++  );
++  m.update.mockResolvedValue({ id: "user1" });
++});
++const request = (data: unknown) =>
++  new Request("http://localhost", {
++    method: "POST",
++    body: JSON.stringify(data),
++  });
++it("revokes native sessions in the password reset transaction", async () => {
++  m.consume.mockResolvedValue("u@example.test");
++  expect(
++    (await reset(request({ token: "valid", password: "new-password" }))).status,
++  ).toBe(200);
++  expect(m.transaction).toHaveBeenCalledOnce();
++  expect(m.deleteMany).toHaveBeenCalledWith({
++    where: { userId: "user1", sessionToken: { startsWith: "mobile:" } },
++  });
++});
++it("does not revoke anything for an invalid reset token", async () => {
++  m.consume.mockResolvedValue(null);
++  expect(
++    (await reset(request({ token: "invalid", password: "new-password" })))
++      .status,
++  ).toBe(400);
++  expect(m.transaction).not.toHaveBeenCalled();
++});
++it("revokes only the authenticated user sessions after password verification", async () => {
++  m.auth.mockResolvedValue({ user: { id: "user1" } });
++  m.findUnique.mockResolvedValue({ passwordHash: "old-hash" });
++  m.compare.mockResolvedValue(true);
++  expect(
++    (
++      await change(
++        request({
++          currentPassword: "old-password",
++          newPassword: "new-password",
++        }),
++      )
++    ).status,
++  ).toBe(200);
++  expect(m.deleteMany).toHaveBeenCalledWith({
++    where: { userId: "user1", sessionToken: { startsWith: "mobile:" } },
++  });
++});
++it("does not modify credentials when the current password is wrong", async () => {
++  m.auth.mockResolvedValue({ user: { id: "user1" } });
++  m.findUnique.mockResolvedValue({ passwordHash: "old-hash" });
++  m.compare.mockResolvedValue(false);
++  expect(
++    (
++      await change(
++        request({ currentPassword: "wrong", newPassword: "new-password" }),
++      )
++    ).status,
++  ).toBe(400);
++  expect(m.transaction).not.toHaveBeenCalled();
++});
+diff --git a/apps/web/features/mobile/route.test.ts b/apps/web/features/mobile/route.test.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/features/mobile/route.test.ts
+@@ -0,0 +1,143 @@
++import { beforeEach, expect, it, vi } from "vitest";
++const m = vi.hoisted(() => ({
++  session: vi.fn(),
++  search: vi.fn(),
++  create: vi.fn(),
++  slots: vi.fn(),
++  cancel: vi.fn(),
++  find: vi.fn(),
++  count: vi.fn(),
++  credentials: vi.fn(),
++}));
++vi.mock("@/features/mobile/session", () => ({
++  readSession: m.session,
++  issueSession: vi.fn(),
++  revokeSession: vi.fn(),
++  allowLogin: () => true,
++}));
++vi.mock("@/lib/auth", () => ({ authenticateCredentials: m.credentials }));
++vi.mock("@/lib/prisma", () => ({
++  prisma: { reservation: { findMany: m.find, count: m.count } },
++}));
++vi.mock("@/features/places/search-service", () => ({
++  searchRestaurants: m.search,
++}));
++vi.mock("@/features/places/search-actions", () => ({
++  restaurantSearchOptions: vi.fn(),
++  restaurantSuggestions: vi.fn(),
++}));
++vi.mock("@/features/places/actions", () => ({ getPlaceBySlug: vi.fn() }));
++vi.mock("@/features/reservations/actions", () => ({
++  createReservationAction: m.create,
++  getAvailableSlotsAction: m.slots,
++  cancelMyReservationAction: m.cancel,
++}));
++vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
++vi.mock("@/app/api/auth/register/route", () => ({ POST: vi.fn() }));
++vi.mock("@/app/api/auth/request-password-reset/route", () => ({
++  POST: vi.fn(),
++}));
++vi.mock("@/app/api/reviews/route", () => ({ POST: vi.fn() }));
++vi.mock("@/app/api/profile/route", () => ({ PATCH: vi.fn() }));
++vi.mock("@/app/api/uploads/avatar/route", () => ({ POST: vi.fn() }));
++vi.mock("@/app/api/quivibe-ai/route", () => ({ POST: vi.fn() }));
++vi.mock("@/app/api/messages/route", () => ({ GET: vi.fn(), PATCH: vi.fn() }));
++import { GET, POST, OPTIONS } from "@/app/api/mobile/[...path]/route";
++function call(path: string, method = "GET", body?: unknown, origin?: string) {
++  const url = "http://localhost/api/mobile/" + path;
++  return (method === "OPTIONS" ? OPTIONS : method === "POST" ? POST : GET)(
++    new Request(url, {
++      method,
++      headers: {
++        ...(body ? { "Content-Type": "application/json" } : {}),
++        ...(origin ? { origin } : {}),
++      },
++      body: body ? JSON.stringify(body) : undefined,
++    }),
++    { params: Promise.resolve({ path: path.split("?")[0].split("/") }) },
++  );
++}
++beforeEach(() => {
++  vi.clearAllMocks();
++  m.session.mockResolvedValue(null);
++  m.find.mockResolvedValue([]);
++  m.count.mockResolvedValue(0);
++});
++it.each(["favorites", "reservations", "reviews/mine", "messages"])(
++  "rejects anonymous private reads: %s",
++  async (path) => {
++    expect((await call(path)).status).toBe(401);
++  },
++);
++it("rejects anonymous reservation before invoking business writes", async () => {
++  expect((await call("reservations", "POST", { placeId: "p" })).status).toBe(
++    401,
++  );
++  expect(m.create).not.toHaveBeenCalled();
++});
++it("serves public discovery with validated filters", async () => {
++  m.search.mockResolvedValue({ places: [], page: 2, total: 0, totalPages: 0 });
++  const response = await call("venues?page=2&sort=rating");
++  expect(response.status).toBe(200);
++  expect(m.search.mock.calls[0][1]).toMatchObject({ page: 2, sort: "rating" });
++  expect(m.search.mock.calls[0][2]).toBeUndefined();
++  expect((await call("venues?page=-1")).status).toBe(400);
++});
++it("scopes reservation lists to current user and requested group", async () => {
++  m.session.mockResolvedValue({ user: { id: "user-a" } });
++  await call("reservations?group=cancelled&page=2");
++  expect(m.find.mock.calls[0][0]).toMatchObject({
++    where: { customerId: "user-a", status: "CANCELLED" },
++    skip: 12,
++    take: 12,
++  });
++});
++it("delegates availability to existing service and preserves its quote", async () => {
++  m.slots.mockResolvedValue({
++    success: true,
++    slots: ["18:00"],
++    quote: { amountMinor: 100, currency: "USD" },
++  });
++  const response = await call(
++    "venues/place-a/availability?date=2026-10-01&partySize=4",
++  );
++  expect(m.slots).toHaveBeenCalledWith({
++    placeId: "place-a",
++    date: "2026-10-01",
++    partySize: 4,
++  });
++  expect(await response.json()).toMatchObject({
++    quote: { amountMinor: 100, currency: "USD" },
++  });
++});
++it("rejects unapproved browser origins", async () => {
++  expect(
++    (await call("venues", "GET", undefined, "https://untrusted.example"))
++      .status,
++  ).toBe(403);
++  expect(m.search).not.toHaveBeenCalled();
++});
++it("answers same-origin preflight without accessing accounts or database", async () => {
++  const response = await call(
++    "venues",
++    "OPTIONS",
++    undefined,
++    "http://localhost",
++  );
++  expect(response.status).toBe(204);
++  expect(response.headers.get("Access-Control-Allow-Origin")).toBe(
++    "http://localhost",
++  );
++  expect(m.session).not.toHaveBeenCalled();
++});
++it("rejects invalid credentials without creating a mobile session", async () => {
++  m.credentials.mockResolvedValue(null);
++  expect(
++    (
++      await call("session", "POST", {
++        email: "user@example.test",
++        password: "wrong",
++      })
++    ).status,
++  ).toBe(401);
++});
+diff --git a/apps/web/features/mobile/session.test.ts b/apps/web/features/mobile/session.test.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/features/mobile/session.test.ts
+@@ -0,0 +1,100 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++const mocks = vi.hoisted(() => ({
++  create: vi.fn(),
++  findUnique: vi.fn(),
++  deleteMany: vi.fn(),
++}));
++vi.mock("@/lib/prisma", () => ({ prisma: { session: mocks } }));
++import {
++  issueSession,
++  readSession,
++  revokeSession,
++  tokenHash,
++  allowLogin,
++} from "./session";
++import { mobileIdentity } from "./context";
++const token = "qvm_" + "a".repeat(64);
++const request = (authorization?: string) =>
++  new Request("http://localhost/api/mobile/session", {
++    headers: authorization ? { authorization } : {},
++  });
++beforeEach(() => vi.clearAllMocks());
++describe("native shared-account sessions", () => {
++  it("stores only a digest and emits independent random tokens", async () => {
++    const a = await issueSession("user1"),
++      b = await issueSession("user1");
++    expect(a.token).toMatch(/^qvm_[a-f0-9]{64}$/);
++    expect(a.token).not.toEqual(b.token);
++    expect(mocks.create.mock.calls[0][0].data).toMatchObject({
++      userId: "user1",
++      sessionToken: tokenHash(a.token),
++    });
++    expect(JSON.stringify(mocks.create.mock.calls)).not.toContain(a.token);
++  });
++  it("requires a Bearer credential, not a cookie or raw token", async () => {
++    expect(await readSession(request())).toBeNull();
++    expect(await readSession(request(token))).toBeNull();
++    expect(await readSession(request("Basic " + token))).toBeNull();
++    expect(mocks.findUnique).not.toHaveBeenCalled();
++  });
++  it("rejects revoked, expired and suspended accounts", async () => {
++    const req = request("Bearer " + token);
++    mocks.findUnique.mockResolvedValue(null);
++    expect(await readSession(req)).toBeNull();
++    mocks.findUnique.mockResolvedValue({ expires: new Date(0), user: {} });
++    expect(await readSession(req)).toBeNull();
++    mocks.findUnique.mockResolvedValue({
++      expires: new Date(Date.now() + 60000),
++      user: { suspendedAt: new Date() },
++    });
++    expect(await readSession(req)).toBeNull();
++  });
++  it("returns only public session identity", async () => {
++    mocks.findUnique.mockResolvedValue({
++      expires: new Date(Date.now() + 60000),
++      user: {
++        id: "user1",
++        name: "User",
++        email: "u@test.example",
++        role: "USER",
++        image: null,
++        suspendedAt: null,
++        moderationPermissions: [],
++      },
++    });
++    const session = await readSession(request("Bearer " + token));
++    expect(session?.user.id).toBe("user1");
++    expect(session?.user).not.toHaveProperty("suspendedAt");
++  });
++  it("revokes only the hashed native credential", async () => {
++    await revokeSession(request("Bearer " + token));
++    expect(mocks.deleteMany).toHaveBeenCalledWith({
++      where: { sessionToken: tokenHash(token) },
++    });
++  });
++  it("limits repeated attempts and resets after the interval", () => {
++    for (let n = 0; n < 10; n++)
++      expect(allowLogin("test-limit", 100)).toBe(true);
++    expect(allowLogin("test-limit", 100)).toBe(false);
++    expect(allowLogin("test-limit", 900101)).toBe(true);
++  });
++  it("isolates concurrent mobile identities and does not leak into web requests", async () => {
++    expect(mobileIdentity.getStore()).toBeUndefined();
++    const identity = (id: string) =>
++      ({ user: { id }, expires: "" }) as Parameters<
++        typeof mobileIdentity.run
++      >[0];
++    const values = await Promise.all(
++      ["a", "b"].map((id) =>
++        mobileIdentity.run(identity(id), async () => {
++          await new Promise((resolve) =>
++            setTimeout(resolve, id === "a" ? 10 : 1),
++          );
++          return mobileIdentity.getStore()?.user.id;
++        }),
++      ),
++    );
++    expect(values).toEqual(["a", "b"]);
++    expect(mobileIdentity.getStore()).toBeUndefined();
++  });
++});
+diff --git a/apps/web/features/mobile/session.ts b/apps/web/features/mobile/session.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/features/mobile/session.ts
+@@ -0,0 +1,61 @@
++import { createHash, randomBytes } from "node:crypto";
++import type { Session } from "next-auth";
++import { prisma } from "@/lib/prisma";
++export const tokenHash = (token: string) =>
++  "mobile:" + createHash("sha256").update(token).digest("hex");
++export async function issueSession(userId: string) {
++  const token = "qvm_" + randomBytes(32).toString("hex");
++  const expires = new Date(Date.now() + 30 * 86400000);
++  await prisma.session.create({
++    data: { userId, sessionToken: tokenHash(token), expires },
++  });
++  return { token, expires: expires.toISOString() };
++}
++export async function readSession(request: Request): Promise<Session | null> {
++  const token = request.headers
++    .get("authorization")
++    ?.match(/^Bearer (qvm_[a-f0-9]{64})$/)?.[1];
++  if (!token || !/^qvm_[a-f0-9]{64}$/.test(token)) return null;
++  const record = await prisma.session.findUnique({
++    where: { sessionToken: tokenHash(token) },
++    include: {
++      user: {
++        select: {
++          id: true,
++          name: true,
++          email: true,
++          role: true,
++          image: true,
++          suspendedAt: true,
++          moderationPermissions: true,
++        },
++      },
++    },
++  });
++  if (!record || record.expires <= new Date() || record.user.suspendedAt)
++    return null;
++  const { suspendedAt: _suspended, ...user } = record.user;
++  return { user, expires: record.expires.toISOString() };
++}
++export async function revokeSession(request: Request) {
++  const token = request.headers
++    .get("authorization")
++    ?.match(/^Bearer (qvm_[a-f0-9]{64})$/)?.[1];
++  if (token)
++    await prisma.session.deleteMany({
++      where: { sessionToken: tokenHash(token) },
++    });
++}
++// Best-effort per-instance throttling; put a shared WAF/rate limit in front of
++// this endpoint for multi-instance production deployments.
++const attempts = new Map<string, { count: number; until: number }>();
++export function allowLogin(key: string, now = Date.now()) {
++  for (const [id, value] of attempts)
++    if (value.until <= now) attempts.delete(id);
++  const id = createHash("sha256").update(key).digest("hex");
++  const value = attempts.get(id) || { count: 0, until: now + 900000 };
++  if (!attempts.has(id) && attempts.size >= 5000) return false;
++  value.count++;
++  attempts.set(id, value);
++  return value.count <= 10;
++}

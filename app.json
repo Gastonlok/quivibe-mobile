@@ -7,9 +7,27 @@
     "orientation": "portrait",
     "icon": "./assets/quivibe-logo.png",
     "userInterfaceStyle": "light",
-    "ios": { "supportsTablet": true },
-    "android": { "predictiveBackGestureEnabled": false },
-    "web": { "favicon": "./assets/quivibe-logo.png" },
-    "plugins": ["expo-router", "expo-image", "expo-secure-store", ["expo-location", {"locationWhenInUsePermission": "Autorise Quivibe à utiliser ta position pour trouver des adresses près de toi."}]]
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/quivibe-logo.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-image",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Autorise Quivibe à utiliser ta position pour trouver des adresses près de toi."
+        }
+      ],
+      "expo-font",
+      "expo-splash-screen"
+    ]
   }
 }

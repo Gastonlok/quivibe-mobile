@@ -1,36 +1,53 @@
 # Quivibe mobile
 
-Application native Expo 57 / React Native / TypeScript. Étape actuelle : socle, navigation Expo Router et thème Quivibe (phases 2–3).
+Client natif Expo SDK 57 / React Native / TypeScript pour le backend Quivibe existant. Ce dépôt ne contient ni base de données ni serveur métier indépendant.
+
+## Parcours implémentés
+
+- Splash et onboarding en trois étapes ; préférences mémorisées, localisation facultative.
+- Accueil personnalisé, catalogue paginé, recherche, suggestions, historique et filtres.
+- Fiches de lieux, photos, carte, itinéraire, téléphone, partage, menus et avis.
+- Compte Quivibe partagé : connexion, inscription, réinitialisation du mot de passe, profil, favoris et messages.
+- Réservation sur les créneaux du backend, contrôle du prix, reprise idempotente, confirmation et annulation.
+- Événements par période et conversation Quivibe AI avec cartes de recommandations.
+
+La découverte reste accessible sans compte. Typographie Noto Sans embarquée, inspirée de la famille utilisée sur jw.org : voir [les références](docs/TYPOGRAPHIE.md).
 
 ## Démarrer
 
-Avec Node.js 22.13 minimum : `npm ci`, puis `npm start`. Utiliser Expo Go compatible SDK 57 ou un development build. Le simulateur iOS nécessite macOS/Xcode.
+Node.js 22.13 minimum :
 
-- `npm run web` : aperçu navigateur.
-- `npm run android` / `npm run ios` : appareil ou simulateur configuré.
-- `npm run type-check` : vérification TypeScript.
-- `npm run export` : bundles Android, iOS et web (pas un APK/IPA).
+```powershell
+npm ci
+Copy-Item .env.example .env
+npm start
+```
 
-## Disponible
+Configurer `EXPO_PUBLIC_API_URL` avec l’URL du **backend existant ayant les routes /api/mobile**. Ces routes sont préparées dans [le patch backend](backend-patches/mobile-api.patch) et déjà appliquées au projet web local de référence. Elles ne sont pas déployées par ce dépôt.
 
-Cinq onglets : Accueil, Explorer, Événements, Favoris, Profil. Routes secondaires : recherche, lieu, menu, réservation, événement, avis, connexion, inscription, compte et Quivibe AI. Thème orange/noir/blanc et logo du site, catégories navigables, pages inconnues et erreurs de rendu gérées.
+Sur un téléphone, utiliser l’adresse réseau du PC ou une URL HTTPS accessible, jamais `localhost` pour joindre le PC. L’aperçu web nécessite une origine CORS autorisée côté serveur.
 
-TanStack Query est fourni à la racine, Expo Image affiche le logo. SecureStore, Location, React Hook Form et Zod sont installés pour les prochaines phases.
+```powershell
+npm run type-check
+npm run lint
+npm run export
+```
 
-## Limites
+L’export produit les bundles Android/iOS/web, pas un APK ni un IPA. Expo Go doit être compatible SDK 57 ; un simulateur iOS nécessite macOS/Xcode.
 
-Les parcours métier affichent explicitement leur indisponibilité. Catalogue réel, session, formulaires, favoris synchronisés, réservations, avis, événements et AI restent à raccorder. Aucune requête métier ni demande de localisation au lancement.
+## Architecture
 
-Les lieux fictifs et favoris de démonstration ont été retirés du code. Les anciennes données AsyncStorage ne sont plus lues ; elles ne sont pas des favoris serveur.
+- `src/app` : Expo Router, cinq onglets et écrans secondaires.
+- `src/components` : composants natifs, formulaires et cartes.
+- `src/services/api` : client HTTP et contrats Zod.
+- `src/hooks` : cache et pagination TanStack Query.
+- `src/store` : session SecureStore native, préférences AsyncStorage.
+- `src/types`, `src/utils`, `src/typography.ts` : contrats et éléments partagés.
 
-## Structure
+Aucun secret serveur dans l’application. Sur web, la session reste uniquement en mémoire ; sur Android/iOS elle est conservée dans SecureStore. Le cache des données métier est en mémoire.
 
-- `src/app/` : routes Expo Router, onglets et stack.
-- `src/components/ui.tsx` : composants natifs partagés.
-- `src/constants/` : libellés de navigation.
-- `src/theme.ts` : palette Quivibe.
-- `assets/quivibe-logo.png` : logo existant du web.
+## État de livraison
 
-Ce dossier est déjà l’application séparée. Aucun Prisma, secret serveur ou accès PostgreSQL côté mobile. Identifiants de distribution, icône finale adaptée aux stores et recette sur téléphones restent à préparer.
+TypeScript, ESLint, exports et recette navigateur vérifiés ; [détails et limites](docs/VALIDATION.md). L’accès PostgreSQL du backend local est actuellement indisponible : une réservation réelle en base et la recette sur téléphones restent à valider. Le backend doit être déployé avant d’utiliser le mobile contre la production.
 
-Voir [l’analyse](docs/ANALYSE-MOBILE.md), [l’intégration](docs/INTEGRATION.md) et [la validation](docs/VALIDATION.md).
+Voir [le raccordement API](docs/INTEGRATION.md) et [l’analyse du projet existant](docs/ANALYSE-MOBILE.md).
