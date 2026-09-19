@@ -59,24 +59,70 @@ function Loading() {
     };
   }, [opacity]);
   return (
-    <Animated.View style={{ flex: 1, opacity }}>
+    <Animated.View
+      onLayout={() => void SplashScreen.hideAsync().catch(() => {})}
+      style={{ flex: 1, backgroundColor: c.background, opacity }}
+    >
       <SafeAreaView
         style={{
           flex: 1,
-          backgroundColor: c.white,
+          backgroundColor: c.background,
           alignItems: "center",
           justifyContent: "center",
           gap: 20,
         }}
       >
-        <Text style={[t.title, { color: c.primaryText }]}>QUIVIBE</Text>
-        <Text style={t.body}>Ta vibe. Ton endroit.</Text>
-        <ActivityIndicator color={c.primaryText} />
+        <StatusBar style="dark" />
+        <View
+          style={{
+            width: 88,
+            height: 88,
+            borderRadius: 28,
+            backgroundColor: c.primary,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          accessible={false}
+        >
+          <Text
+            style={[
+              t.title,
+              { fontSize: 48, lineHeight: 62, color: c.secondary },
+            ]}
+          >
+            Q
+          </Text>
+        </View>
+        <View style={{ alignItems: "center", gap: 6 }}>
+          <Text style={[t.title, { letterSpacing: 3, color: c.text }]}>
+            QUIVIBE
+          </Text>
+          <Text style={[t.body, { color: c.muted }]}>
+            Ta vibe. Ton endroit.
+          </Text>
+        </View>
+        <View
+          accessibilityRole="progressbar"
+          accessibilityLabel="Chargement de Quivibe"
+          accessibilityState={{ busy: true }}
+          style={{ alignItems: "center", gap: 12, marginTop: 24 }}
+        >
+          <ActivityIndicator size="large" color={c.primaryText} />
+          <Text style={[t.caption, { color: c.muted }]}>
+            Préparation de ton espace…
+          </Text>
+        </View>
       </SafeAreaView>
     </Animated.View>
   );
 }
 function Navigation() {
+  const [introComplete, setIntroComplete] = useState(false);
+  useEffect(() => {
+    // Keep the startup identity readable even when local storage loads instantly.
+    const timer = setTimeout(() => setIntroComplete(true), 900);
+    return () => clearTimeout(timer);
+  }, []);
   const prefs = usePreferences(),
     session = useSession(),
     network = useNetworkState();
@@ -85,7 +131,7 @@ function Navigation() {
   useEffect(() => {
     onlineManager.setOnline(!offline);
   }, [offline]);
-  if (!prefs.ready || !session.ready) return <Loading />;
+  if (!introComplete || !prefs.ready || !session.ready) return <Loading />;
   return (
     <View style={{ flex: 1 }}>
       <StatusBar style="dark" />
@@ -161,8 +207,8 @@ export default function RootLayout() {
       }),
   );
   useEffect(() => {
-    if (loaded || error) void SplashScreen.hideAsync().catch(() => {});
-  }, [loaded, error]);
+    if (error) void SplashScreen.hideAsync().catch(() => {});
+  }, [error]);
   useEffect(() => {
     if (Platform.OS === "web") return;
     const listener = AppState.addEventListener("change", (state) =>
